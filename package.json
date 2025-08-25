@@ -1,0 +1,17 @@
+{
+  "name": "k8s-web-hello",
+  "version": "1.0.0",
+  "description": "",
+  "main": "app.js",
+  "scripts": {
+    "start": "app.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.17.2",
+    "axios": "^1.7.2"
+  }
+}
+

@@ -1,0 +1,31 @@
+- name: Настроить yc CLI
+  hosts: all
+  become: yes
+  vars:
+    docker_users:
+      - astra
+
+  tasks:
+    - name: Создать директорию конфигурации
+      file:
+        path: ~/.config/yandex-cloud
+        state: directory
+        mode: 0755
+
+    - name: Создать конфигурационный файл
+      copy:
+        dest: ~/.config/yandex-cloud/config.yaml
+        content: |
+          current: server_profile
+          profiles:
+            server_profile:
+              token: "{{ lookup('env', 'YC_OAUTH_TOKEN') }}"
+              cloud-id: "{{ lookup('env', 'YC_CLOUD_ID') }}"
+              folder-id: "{{ lookup('env', 'YC_FOLDER_ID') }}"
+              compute-default-zone: "{{ lookup('env', 'YC_ZONE') }}"
+        mode: 0600
+
+    - name: Проверить конфигурацию
+      command: yc config list
+      register: yc_config
+      changed_when: false

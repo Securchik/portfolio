@@ -1,0 +1,41 @@
+---
+- name: Установка и настройка Nginx
+  hosts: docker_host
+  become: yes
+  tasks:
+    - name: Install Nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+      register: apt_result
+      failed_when: apt_result.failed and 'Could not find package' not in apt_result.msg
+
+    - name: Configure Nginx as reverse proxy
+      ansible.builtin.copy:
+        content: |
+          server {
+              listen 80;
+              server_name _;
+              location / {
+                  proxy_pass http://localhost:8080;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+              }
+          }
+        dest: /etc/nginx/sites-available/default
+        mode: '0644'
+      notify: Restart Nginx
+
+    - name: Запуск сервиса
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: Restart Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted

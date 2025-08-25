@@ -1,0 +1,14 @@
+build_app:
+    image:
+        name: checkmarx/kics:latest
+    stage: security
+    script:
+        - checkmarx/kics scan -p /path -o "output_scan"
+    when: manual
+    tags:
+        - docker-runner
+    artifacts:
+        when: on_success
+        expire_in: 1 day
+        paths:
+            - ${CI_PROJECT_DIR}/output_scan

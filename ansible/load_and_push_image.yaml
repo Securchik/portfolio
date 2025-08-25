@@ -1,0 +1,37 @@
+- hosts: docker_host
+  become: true
+  vars:
+    archive_name: "easy_app.tar.gz"
+    archive_path: "/home/astra/{{ archive_name }}"
+    image_full_name: "{{ image_name }}:{{ image_tag }}"
+    yc_token: "{{ lookup('env', 'YC_TOKEN') }}"
+    docker_user: "astra"
+
+  tasks:
+    - name: Проверяем, что архив существует
+      ansible.builtin.stat:
+        path: "{{ archive_path }}"
+      register: archive_stat
+
+    - name: Ошибка, если архив не найден
+      ansible.builtin.fail:
+        msg: "Архив {{ archive_path }} не найден!"
+      when: not archive_stat.stat.exists
+
+    - name: Загружаем Docker-образ из архива
+      ansible.builtin.shell: docker load -i {{ archive_path }}
+
+    - name: Проверяем наличие загруженного образа
+      ansible.builtin.shell: docker images
+      register: docker_images
+
+    - name: Отображаем список образов
+      ansible.builtin.debug:
+        var: docker_images.stdout
+
+    - name: Авторизуемся в Yandex Container Registry
+      ansible.builtin.shell: |
+        yc config set token {{ yc_token }}
+        yc container registry configure-docker
+      args:
+        warn: no

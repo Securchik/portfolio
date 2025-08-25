@@ -1,0 +1,39 @@
+---
+- name: Убедиться, что директория для логов существует
+  file:
+    path: "{{ log_file_path | dirname }}"
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Копировать скрипт аудита на удаленный хост
+  template:
+    src: audit_script.sh.j2
+    dest: /tmp/os_hardening_audit.sh
+    mode: '0700'
+  become: true
+
+- name: Выполнить скрипт аудита
+  command: /bin/bash /tmp/os_hardening_audit.sh
+  become: true
+  register: audit_result
+
+- name: Установить права на директорию логов
+  local_action:
+    module: file
+    path: "{{ playbook_dir }}/logs"
+    state: directory
+    mode: '0755'
+
+- name: Получить лог аудита
+  fetch:
+    src: "{{ log_file_path }}"
+    dest: "{{ playbook_dir }}/logs/{{ inventory_hostname }}-{{ log_file_path | basename }}"
+    flat: yes
+  become: true
+
+- name: Удалить скрипт аудита
+  file:
+    path: /tmp/os_hardening_audit.sh
+    state: absent
+  become: true

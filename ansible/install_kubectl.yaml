@@ -1,0 +1,42 @@
+---
+- name: Установка последней стабильной версии kubectl
+  hosts: all
+  become: true
+  vars:
+    install_dir: "/usr/local/bin"
+    docker_user: "astra"
+
+  tasks:
+    - name: Получаем последнюю стабильную версию kubectl
+      shell: curl -LS https://dl.k8s.io/release/stable.txt
+      register: latest_kubectl_version
+      changed_when: false
+
+    - name: Скачиваем последнюю стабильную версию kubectl
+      get_url:
+        url: "https://dl.k8s.io/release/{{ latest_kubectl_version.stdout }}/bin/linux/amd64/kubectl"
+        dest: "/tmp/kubectl"
+        mode: '0755'
+
+    - name: Перемещаем kubectl в системную директорию
+      copy:
+        src: "/tmp/kubectl"
+        dest: "{{ install_dir }}/kubectl"
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Проверяем установленную версию (совместимый способ)
+      command: kubectl version --client
+      register: version_check
+      changed_when: false
+
+    - name: Выводим информацию о версии
+      debug:
+        msg: "Установлен kubectl версии: {{ version_check.stdout_lines | first }}"
+
+    - name: Удаляем временный файл
+      file:
+        path: "/tmp/kubectl"
+        state: absent

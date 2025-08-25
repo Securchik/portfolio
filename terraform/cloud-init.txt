@@ -1,0 +1,34 @@
+#cloud-config
+datasource:
+  Ec2:
+    strict_id: false
+ssh_pwauth: no
+users:
+  - name: astra
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - <SSH_PUBKEY>
+    groups: [docker, sudo]
+write_files:
+  - path: "/usr/local/etc/yc-install.sh"
+    permissions: "755"
+    content: |
+      #!/bin/bash
+
+      # CLI
+      echo "Installing Yandex Cloud CLI"
+      curl \
+        --silent \
+        --show-error \
+        --location \
+        https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+      VM_ID=$(curl --silent http://169.254.169.254/latest/meta-data/instance-id)
+
+      # Save YC params
+      echo "Saving YC params to the ~/.bashrc"
+      cat << EOF >> $HOME/.bashrc
+    defer: true
+runcmd:
+  - [su, astra, -c, "/usr/local/etc/yc-install.sh"]
+  - [su, astra, -c, "/usr/local/etc/yc-init.sh"]

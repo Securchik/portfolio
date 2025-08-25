@@ -1,0 +1,206 @@
+stages:
+  - build
+  - scan
+  - deploy
+
+variables:
+  IMAGE_NAME: "192.168.5.13/library/easy_app-${CI_JOB_ID}"
+  IMAGE_TAG: "1.0.0"
+  ARCHIVE_NAME: "easy_app.tar.gz"
+  TF_VAR_YC_TOKEN: $YC_TOKEN
+  TF_VAR_YC_CLOUD_ID: $YC_CLOUD_ID
+  TF_VAR_YC_FOLDER_ID: $YC_FOLDER_ID
+  TF_VAR_YC_ZONE: $YC_ZONE
+  TF_VAR_k8s_sa_id: $K8S_SA_ID
+  TF_YC_OAUTH_TOKEN: $YC_OAUTH_TOKEN
+
+#build_app:
+  #image: node:alpine
+  #stage: build
+  #script:
+  #  - npm install
+  #when: manual
+  #tags:
+  #  - docker-runner
+  #artifacts:
+  #  when: on_success
+  #  expire_in: 1 day
+  #  paths:
+  #    - node_modules/
+  #    - index.mjs
+
+build_app:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  script:
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/Dockerfile"
+      --destination "${IMAGE_NAME}:${IMAGE_TAG}"
+      --no-push
+      --tarPath "${CI_PROJECT_DIR}/${ARCHIVE_NAME}"
+  artifacts:
+    when: on_success
+    expire_in: 1 day
+    paths:
+      - "${ARCHIVE_NAME}"
+  tags:
+    - docker-runner
+  when: manual
+
+gixy:
+  stage: scan
+  image: python:3.9
+  before_script:
+    - pip install gixy
+  script:
+    - gixy deploy/ansible/nginx/nginx.conf > gixy-results.txt
+    - cat gixy-results.txt
+    - if grep -q "ERROR" gixy-results.txt; then echo "Gixy found errors in nginx.conf!"; exit 1; fi
+  artifacts:
+    name: gixy-results
+    paths:
+      - gixy-results.txt
+    expire_in: 1 week
+  tags:
+    - docker-runner
+
+deploy_infra:
+  stage: deploy
+  needs:
+    - build_app
+  when: on_success
+  only:
+    - main
+  image:
+    name: hashicorp/terraform:1.7
+    entrypoint: [""]
+  before_script:
+    - set -e
+    - apk add --no-cache curl bash jq
+    - curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+    - export PATH=$PATH:/root/yandex-cloud/bin
+    - yc version
+    - export YC_TOKEN=$(yc iam create-token)
+    - export TF_VAR_CI_PROJECT_DIR=${CI_PROJECT_DIR}
+    - export TF_VAR_ssh_public_key="${SSH_KEY}"
+    - export TF_VAR_k8s_sa_id="${K8S_SA_ID}"
+    - export TF_YC_OAUTH_TOKEN="$YC_OAUTH_TOKEN"
+    - if [ -z "${SSH_KEY}" ]; then echo "SSH_KEY is empty!"; exit 1; fi
+    - if [ -z "${SSH_PRIVATE_KEY}" ]; then echo "SSH_PRIVATE_KEY is empty!"; exit 1; fi
+    - mkdir -p ~/.ssh
+    - echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519
+    - sed -i "s|<SSH_PUBKEY>|${SSH_KEY}|g" ${CI_PROJECT_DIR}/deploy/terraform/cloud_init.txt
+    - |
+      echo "
+      provider_installation {
+        network_mirror {
+          url = \"https://terraform-mirror.yandexcloud.net/\"
+          include = [\"registry.terraform.io/*/*\"]
+        }
+        direct {
+          exclude = [\"registry.terraform.io/*/*\"]
+        }
+      }" > ~/.terraformrc
+  script:
+    - cd ${CI_PROJECT_DIR}/deploy/terraform
+    - terraform init
+    - terraform validate
+    - terraform plan -input=false
+    - terraform apply -input=false -auto-approve
+    - sleep 25
+    - terraform refresh
+    - export YC_REGISTRY_ID=$(terraform output -raw registry_id)
+    - if [ -z "${YC_REGISTRY_ID}" ]; then echo "YC_REGISTRY_ID is empty!"; exit 1; fi
+    - echo "YC_REGISTRY_ID:${YC_REGISTRY_ID}"
+    - terraform output -raw external_ip > ${CI_PROJECT_DIR}/external_ip.txt
+    - echo "Terraform output IP $(cat ${CI_PROJECT_DIR}/external_ip.txt)"
+    - export SERVER_IP=$(cat ${CI_PROJECT_DIR}/external_ip.txt)
+    - echo "Copying ${ARCHIVE_NAME} to server ${SERVER_IP}"
+    - scp -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${CI_PROJECT_DIR}/${ARCHIVE_NAME} astra@${SERVER_IP}:/tmp/
+    - ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 astra@${SERVER_IP} "ls -la /tmp/${ARCHIVE_NAME}"
+    - ssh -i ~/.ssh/id_ed25519 astra@${SERVER_IP} "mkdir -p /home/astra && mv /tmp/${ARCHIVE_NAME} /home/astra/"
+    - ssh -i ~/.ssh/id_ed25519 astra@${SERVER_IP} "ls -la /home/astra/${ARCHIVE_NAME}"
+  after_script:
+    - yc config set token ${YC_TOKEN}
+    - yc config set cloud-id ${YC_CLOUD_ID}
+    - yc config set folder-id ${YC_FOLDER_ID}
+    - echo "Actual YC IP $(yc compute instance get $(terraform output -raw instance_id) --format json | jq -r '.network_interfaces[0].primary_v4_address.one_to_one_nat.address')"
+    - rm -f ~/.ssh/id_ed25519
+  artifacts:
+    paths:
+      - ${CI_PROJECT_DIR}/external_ip.txt
+  tags:
+    - docker-runner
+
+install_docker_with_ansible:
+  stage: deploy
+  needs:
+    - deploy_infra
+  when: on_success
+  tags:
+    - docker-runner
+  image: python:3.11
+  before_script:
+    - set -e
+    - apt-get update && apt-get install -y curl bash jq
+    - pip install ansible
+    - mkdir -p ~/.ssh
+    - echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519
+    - export TF_OUTPUT_EXTERNAL_IP=$(cat ${CI_PROJECT_DIR}/external_ip.txt)
+    - export YC_OAUTH_TOKEN="$YC_OAUTH_TOKEN"
+    - curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+    - export PATH=$PATH:/root/yandex-cloud/bin
+    - yc --version
+    - yc config profile create my_profile
+    - yc config set token "${YC_OAUTH_TOKEN}" --profile my_profile
+    - yc config set cloud-id "${YC_CLOUD_ID}" --profile my_profile
+    - yc config set folder-id "${YC_FOLDER_ID}" --profile my_profile
+    - yc config set compute-default-zone "${YC_ZONE}" --profile my_profile
+    - yc config profile activate my_profile
+    - yc config list
+    - echo "[docker_host]" > /tmp/inventory
+    - echo "${TF_OUTPUT_EXTERNAL_IP} ansible_user=astra ansible_ssh_private_key_file=~/.ssh/id_ed25519" >> /tmp/inventory
+    - echo "[docker_host:vars]" >> /tmp/inventory
+    - echo "ansible_ssh_common_args='-o StrictHostKeyChecking=no'" >> /tmp/inventory
+    - cat /tmp/inventory
+    - ssh-keyscan -H ${TF_OUTPUT_EXTERNAL_IP} >> ~/.ssh/known_hosts
+  script:
+    - ansible-playbook -i /tmp/inventory deploy/ansible/install_docker.yaml -vvv
+    - ansible-playbook -i /tmp/inventory deploy/ansible/install_nginx.yaml -vvv
+    - ansible-playbook -i /tmp/inventory deploy/ansible/install_kubectl.yaml
+    #- ansible-playbook -i /tmp/inventory deploy/ansible/yc_init_set.yaml -vvv
+    - ansible-playbook -i /tmp/inventory deploy/ansible/os_hardening_audit.yaml -vvv
+    #- ansible-playbook -i /tmp/inventory deploy/ansible/load_and_push_image.yaml -vvv -e "archive_name=${ARCHIVE_NAME}" -e "image_name=cr.yandex/${YC_REGISTRY_ID}/easy_app" -e "image_tag=${IMAGE_TAG}" -e "yc_token=${YC_TOKEN}"
+  after_script:
+    - rm -f ~/.ssh/id_ed25519
+  artifacts:
+    paths:
+      - deploy/ansible/logs/
+    expire_in: 1 week
+
+#
+ # stage: deploy
+ # needs:
+ #   - install_docker_with_ansible
+  #when: on_success
+ # tags:
+ #   - docker-runner
+ # before_script:
+  #  - apt-get update && apt-get install -y curl
+  #  - export SERVER_IP=$(cat ${CI_PROJECT_DIR}/external_ip.txt)
+  #  - mkdir -p ~/.ssh
+  #  - echo "${SSH_PRIVATE_KEY}" > ~/.ssh/id_ed25519
+  #  - chmod 600 ~/.ssh/id_ed25519
+  #script:
+  #  - curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+  #  - export PATH=$PATH:/root/yandex-cloud/bin
+  #  - yc config set token ${YC_TOKEN}
+  #  - yc container registry configure-docker
+  #  - docker push cr.yandex/${YC_REGISTRY_ID}/easy_app:${IMAGE_TAG}
+  #after_script:
+  #  - rm -f ~/.ssh/id_ed25519

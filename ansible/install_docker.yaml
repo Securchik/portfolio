@@ -1,0 +1,51 @@
+---
+- hosts: all
+  become: yes
+  vars:
+    docker_users:
+      - astra
+
+  tasks:
+    - name: Установка зависимостей
+      apt:
+        name: ["apt-transport-https", "ca-certificates", "curl", "software-properties-common", "gnupg"]
+        state: present
+        update_cache: yes
+
+    - name: Добавить Docker GPG ключ
+      apt_key:
+        url: https://download.docker.com/linux/debian/gpg
+        state: present
+
+    - name: Добавить Docker репозиторий
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/debian {{ ansible_distribution_release }} stable"
+        state: present
+        update_cache: yes
+
+    - name: Установить Docker CE
+      apt:
+        name: ["docker-ce", "docker-ce-cli", "containerd.io", "docker-compose-plugin"]
+        state: present
+
+    - name: Настроить Docker сервис
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Добавить пользователей в группу docker
+      user:
+        name: "{{ item }}"
+        groups: docker
+        append: yes
+      loop: "{{ docker_users }}"
+
+    - name: Проверить установку
+      command: docker --version
+      register: docker_check
+      changed_when: false
+
+    - debug:
+        var: docker_check.stdout
+

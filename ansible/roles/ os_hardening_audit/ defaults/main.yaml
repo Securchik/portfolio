@@ -1,0 +1,2 @@
+---
+log_file_path: "/var/log/os_hardening_audit_{{ ansible_date_time.date }}.log"
